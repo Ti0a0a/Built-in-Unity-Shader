@@ -39,7 +39,12 @@ uniform SamplerSparse metallic_tex;
 //: param auto is_2d_view
 uniform bool uniform_2d_view;
 
+//: param custom { "default": false, "label": "BruteForce" }
+uniform bool BruteForce;
+//: param custom { "default": true, "label": "Linear Space" }
+uniform bool LinearS;
 
+#define DISABLE_FRAMEBUFFER_SRGB_CONVERSION
 //--------------------------------------------------------------------------------------------------
 vec3 pow3(vec3 a,float b)
 {
@@ -51,7 +56,10 @@ vec3 mix3(vec3 a,vec3 b,float c)
     return a*(1-c)+c*b;
 }
 //--------------------------------------------------------------------------------------------------
-
+float saturate(float x)
+{
+    return max(0.0, min(1.0, x));
+}
 //--------------------------------------------------------------------------------------------------
 // Appoximation of joint Smith term for GGX
 // [Heitz 2014, "Understanding the Masking-Shadowing Function in Microfacet-Based BRDFs"]
@@ -89,10 +97,16 @@ vec4 ComputeUnityBRDF(V2F inputs,vec3 diffColor,float metallic,float roughness,f
     vec3 normal_vec=computeWSNormal(inputs.sparse_coord,inputs.tangent,inputs.bitangent,inputs.normal);
     
     vec3 fresnelDielect=vec3(pow(.04,1));
+   
     vec3 specColor=mix3(fresnelDielect,diffColor,metallic);
     //--invers gamma, intented to fake unity's default gamma space lighting
-    float gamma=1;
+        float gamma=2.2;
     float gammaNorm=.87604;
+    if(LinearS)
+    {
+        gammaNorm=1;
+        gamma=1;
+    }
     diffColor=pow3(diffColor,1/gamma);
     metallic=pow(metallic,gamma);
     
@@ -113,7 +127,7 @@ vec4 ComputeUnityBRDF(V2F inputs,vec3 diffColor,float metallic,float roughness,f
     
     vec3 FullIS=vec3(0.);
     
-    float ndv=dot(vectors.eye,vectors.normal);
+    float ndv=saturate(dot(vectors.eye,vectors.normal));
     
     for(int i=0;i<SamplesNum;++i)
     {
@@ -127,23 +141,25 @@ vec4 ComputeUnityBRDF(V2F inputs,vec3 diffColor,float metallic,float roughness,f
 
         vec3 Ln=-reflect(vectors.eye,Hn);
         
-        float fade=horizonFading(dot(vectors.vertexNormal,Ln),horizonFade);
+        float fade=horizonFading(saturate(dot(vectors.vertexNormal,Ln)),horizonFade);
         
-        float ndl=dot(vectors.normal,Ln);
+        float ndl=saturate(dot(vectors.normal,Ln));
         ndl=max(1e-8,ndl);
-        float vdh=max(1e-8,dot(vectors.eye,Hn));
-        float ndh=max(1e-8,dot(vectors.normal,Hn));
+        float vdh=max(1e-8,saturate(dot(vectors.eye,Hn)));
+        float ndh=max(1e-8,saturate(dot(vectors.normal,Hn)));
         float PDF=(4.*Vis_SmithJointApprox(roughness,ndv,ndl)*ndl*vdh/ndh);
         //4.0f * Vis * NdotL * VdotH / NdotH;
         
         float lodS=roughness<.01?0.:computeLOD(Ln,probabilityGGX(ndh,vdh,roughness));
         
-        vec3 irr=envSampleLOD(Ln,lodS);
+        vec3 irr=fade*envSampleLOD(Ln,lodS);
         //miplevel probablityggx
         
         // FullIS+=irr*F_Schlick(specColor,vdh)*clamp(visibility(ndl,ndv,roughness)*PDF*ndl,0,1);
         //FullIS+=fade*envSampleLOD(Ln,lodS)*cook_torrance_contrib(vdh,ndh,ndl,ndv,specColor,roughness);
         FullIS+=irr*clamp(F_Schlick(specColor,vdh)*Vis_Schlick(roughness,ndv,ndl)*PDF,0.,.1);
+        //FullIS+=irr*cook_torrance_contrib(vdh,ndh,ndl,ndv,specColor,roughness);
+        //FullIS+=irr*clamp(F_Schlick(specColor,vdh)*Vis_Schlick(roughness,ndv,ndl)*PDF,0.,.1);
     }
     
     FullIS/=SamplesNum;
