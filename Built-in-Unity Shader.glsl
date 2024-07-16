@@ -1,11 +1,12 @@
 
+//#version 330
 //- Built In Unity Shader for Metallic Roughness
 //- ===============================================
 //-
 //- Import from libraries.
+//
 
-
-import lib-sampler.glsl
+//import lib-sampler.glsl
 import lib-pbr.glsl
 import lib-sparse.glsl
 import lib-alpha.glsl
@@ -18,10 +19,11 @@ import lib-utils.glsl
 import lib-vectors.glsl
 import lib-sss.glsl
 
+// Link Unity Metallic roughness
+//: metadata {
+    //:   "mdl":"mdl::alg::materials::physically_metallic_roughness::physically_metallic_roughness"
+//: }
 
-
-//: param auto environment_rotation
-uniform float environment_rotation;
 //- Show back faces as there may be holes in front faces.
 //: state cull_face off
 
@@ -35,6 +37,8 @@ uniform SamplerSparse basecolor_tex;
 uniform SamplerSparse roughness_tex;
 //: param auto channel_metallic
 uniform SamplerSparse metallic_tex;
+//: param auto channel_specularlevel
+uniform SamplerSparse specularlevel_tex;
 
 //: param auto is_2d_view
 uniform bool uniform_2d_view;
@@ -44,7 +48,6 @@ uniform bool BruteForce;
 //: param custom { "default": true, "label": "Linear Space" }
 uniform bool LinearS;
 
-#define DISABLE_FRAMEBUFFER_SRGB_CONVERSION
 //--------------------------------------------------------------------------------------------------
 vec3 pow3(vec3 a,float b)
 {
@@ -58,7 +61,7 @@ vec3 mix3(vec3 a,vec3 b,float c)
 //--------------------------------------------------------------------------------------------------
 float saturate(float x)
 {
-    return max(0.0, min(1.0, x));
+    return max(0.,min(1.,x));
 }
 //--------------------------------------------------------------------------------------------------
 // Appoximation of joint Smith term for GGX
@@ -91,16 +94,16 @@ float Vis_Schlick(float Roughness,float NoV,float NoL)
 
 //--------------------------------------------------------------------------------------------------
 //- Compute the outgoing light radiance to the viewer's eye
-vec4 ComputeUnityBRDF(V2F inputs,vec3 diffColor,float metallic,float roughness,float occlusion,int SamplesNum,LocalVectors vectors)
+/*vec3 ComputeUnityBRDF(V2F inputs,vec3 diffColor,float metallic,float roughness,float occlusion,int SamplesNum,LocalVectors vectors)
 {
     //- Get world space normal
     vec3 normal_vec=computeWSNormal(inputs.sparse_coord,inputs.tangent,inputs.bitangent,inputs.normal);
     
     vec3 fresnelDielect=vec3(pow(.04,1));
-   
+    
     vec3 specColor=mix3(fresnelDielect,diffColor,metallic);
     //--invers gamma, intented to fake unity's default gamma space lighting
-        float gamma=2.2;
+    float gamma=2.2;
     float gammaNorm=.87604;
     if(LinearS)
     {
@@ -133,15 +136,15 @@ vec4 ComputeUnityBRDF(V2F inputs,vec3 diffColor,float metallic,float roughness,f
     {
         vec2 Xi=fibonacci2D(i,nbSamples);
         vec3 Hn=importanceSampleGGX(
-        Xi,
-        vectors.tangent,
-        vectors.bitangent,
-        vectors.normal,
+            Xi,
+            vectors.tangent,
+            vectors.bitangent,
+            vectors.normal,
         roughness);
-
+        
         vec3 Ln=-reflect(vectors.eye,Hn);
         
-        float fade=horizonFading(saturate(dot(vectors.vertexNormal,Ln)),horizonFade);
+        float fade=horizonFading(dot(vectors.vertexNormal,Ln),horizonFade);
         
         float ndl=saturate(dot(vectors.normal,Ln));
         ndl=max(1e-8,ndl);
@@ -171,27 +174,121 @@ vec4 ComputeUnityBRDF(V2F inputs,vec3 diffColor,float metallic,float roughness,f
     //- Sum diffuse + spec + emissive
     return vec4(pow3(contribS+contribE+contribEm,gamma),1);
     
-}
+} */
 
-//- Shader entry point.
-vec4 shade(V2F inputs)
+vec3 UnityComputeSpecular(vec3 specColor,float roughness,LocalVectors vectors)
 {
-    //float glossiness=getRoughness(roughness_tex,inputs.sparse_coord);
-    float roughness=sRGB2linear(getRoughness(roughness_tex,inputs.sparse_coord));
-    vec4 baseColor=textureSparse(basecolor_tex,inputs.sparse_coord);
-    alphaKill(inputs.sparse_coord);
-    vec3 metallic=textureSparse(metallic_tex,inputs.sparse_coord).xyz;
-    float occlusion=getAO(inputs.sparse_coord)*getShadowFactor();
-    LocalVectors vectors=computeLocalFrame(inputs);
-    sssCoefficientsOutput(getSSSCoefficients(inputs.sparse_coord));
-    // Feed parameters for a physically based BRDF integration
-    return vec4(
-    ComputeUnityBRDF(
-    inputs,
-    baseColor.xyz,
-    metallic.x,
-    roughness,
-    occlusion,
-    nbSamples,
-    vectors).rgb,1.);
+    //--invers gamma, intented to fake unity's default gamma space lighting
+    float gamma=2.2;
+    float gammaNorm=.87604;
+    if(LinearS)
+    {
+        gammaNorm=1;
+        gamma=1;
+    }
+    
+    //
+    vec3 contribS=vec3(0.);
+    
+    vec3 FullIS=vec3(0.);
+    
+    float ndv=saturate(dot(vectors.eye,vectors.normal));
+    
+    for(int i=0;i<nbSamples;++i)
+    {
+        vec2 Xi=fibonacci2D(i,nbSamples);
+        vec3 Hn=importanceSampleGGX(
+            Xi,
+            vectors.tangent,
+            vectors.bitangent,
+            vectors.normal,
+        roughness);
+        
+        vec3 Ln=-reflect(vectors.eye,Hn);
+        
+        float fade=horizonFading(dot(vectors.vertexNormal,Ln),horizonFade);
+        
+        float ndl=saturate(dot(vectors.normal,Ln));
+        ndl=max(1e-8,ndl);
+        float vdh=max(1e-8,saturate(dot(vectors.eye,Hn)));
+        float ndh=max(1e-8,saturate(dot(vectors.normal,Hn)));
+        float PDF=(4.*Vis_SmithJointApprox(roughness,ndv,ndl)*ndl*vdh/ndh);
+        //4.0f * Vis * NdotL * VdotH / NdotH;
+        
+        float lodS=roughness<.01?0.:computeLOD(Ln,probabilityGGX(ndh,vdh,roughness));
+        
+        vec3 irr=fade*envSampleLOD(Ln,lodS);
+        //miplevel probablityggx
+        
+        FullIS+=irr*clamp(F_Schlick(specColor,vdh)*Vis_Schlick(roughness,ndv,ndl)*PDF,0.,1.0);
+        
+    }
+    
+    FullIS/=float(nbSamples);
+    contribS=pow3(FullIS,1/gamma);
+    
+    //- Sum diffuse + spec + emissive
+    return pow3(contribS,gamma);
+    
 }
+//
+//- Shader entry point.
+void shade(V2F inputs)
+{
+
+        //--invers gamma, intented to fake unity's default gamma space lighting
+    float gamma=2.2;
+    float gammaNorm=.87604;
+    if(LinearS)
+    {
+        gammaNorm=1;
+        gamma=1;
+    }
+    //float glossiness=getRoughness(roughness_tex,inputs.sparse_coord);
+    float roughness=getRoughness(roughness_tex,inputs.sparse_coord);
+    vec3 baseColor=textureSparse(basecolor_tex,inputs.sparse_coord).xyz;
+    alphaKill(inputs.sparse_coord);
+    float metallic=getMetallic(metallic_tex,inputs.sparse_coord);
+    float occlusion=getAO(inputs.sparse_coord)*getShadowFactor();
+    
+    //sssCoefficientsOutput(getSSSCoefficients(inputs.sparse_coord));
+    float specularLevel=getSpecularLevel(specularlevel_tex,inputs.sparse_coord);
+    float dielectricSpec = 0.04 * specularLevel;
+    vec3 diffColor = max(baseColor - baseColor * metallic, 0);		// 1 mad
+    
+    vec3 fresnelDielect=vec3(pow(.04,1));
+    vec3 specColor=mix3(fresnelDielect,diffColor,metallic);
+    
+    //vec3 specColor = (dielectricSpec - dielectricSpec * metallic) + baseColor * metallic;	// 2 mad
+
+    
+    float specOcclusion=specularOcclusionCorrection(occlusion,metallic,roughness);
+    
+    LocalVectors vectors=computeLocalFrame(inputs);
+        vec3 diffuseIrradiance=pow3(envIrradiance(vectors.normal),1/gamma);
+    // Feed parameters for a physically based BRDF integration
+    /*return vec4(
+        ComputeUnityBRDF(
+            inputs,
+            baseColor.xyz,
+            metallic.x,
+            roughness,
+            occlusion,
+            nbSamples,
+        vectors).rgb,1.);
+        */
+        
+        emissiveColorOutput(pbrComputeEmissive(emissive_tex,inputs.sparse_coord));
+        
+        albedoOutput(diffColor);
+        
+        diffuseShadingOutput(occlusion * diffuseIrradiance);
+        
+        specularShadingOutput(specOcclusion*UnityComputeSpecular(specColor,roughness,vectors));
+        
+        sssCoefficientsOutput(getSSSCoefficients(inputs.sparse_coord));
+        
+        sssColorOutput(getSSSColor(inputs.sparse_coord));
+        
+    }
+    
